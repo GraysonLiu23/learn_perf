@@ -24,7 +24,7 @@ static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
     fprintf(stderr, "Error creating event");
     exit(EXIT_FAILURE);
   }
-
+  printf("Success creating event\n");
   return fd;
 }
 
@@ -34,20 +34,27 @@ int main() {
   struct perf_event_attr pe;
 
   // Configure the event to count
+  // 设置 perf_event_attr 结构体
   memset(&pe, 0, sizeof(struct perf_event_attr));
-  pe.type = PERF_TYPE_HARDWARE;
-  pe.size = sizeof(struct perf_event_attr);
-  pe.config = PERF_COUNT_HW_CPU_CYCLES;
-  pe.disabled = 1;
+  pe.type = PERF_TYPE_HARDWARE;    // 硬件泛化性能事件 generalized hardware event
+  pe.size = sizeof(struct perf_event_attr);    // 固定写法
+  pe.config = PERF_COUNT_HW_CPU_CYCLES;    // 如果是 PERF_TYPE_HARDWARE，config 设为某一个 PERF_COUNT_HW
+  pe.disabled = 1;    // 计数器开始时是被禁用的，之后可以通过 ioctl 启用
   pe.exclude_kernel = 1; // Do not measure instructions executed in the kernel
   pe.exclude_hv = 1;     // Do not measure instructions executed in a hypervisor
 
   // Create the event
   fd = perf_event_open(&pe, 0, -1, -1, 0);
+  // 参数1 perf_event_attr 结构体
+  // 参数2 pid and 参数3 cpu pid==0 and cpu==-1 仅测量本进程，可以在任意 CPU 上
+  // 参数4 group_fd group_fd==-1 是group leader，应当最先被创建
+  // 参数5 flags 不加 flag
 
   // Reset counters and start counting
   ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+  printf("counter reset.\n");
   ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+  printf("measured function start.\n");
   // Example code to count through
   code_to_measure();
   // Stop counting

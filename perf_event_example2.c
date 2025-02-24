@@ -11,7 +11,7 @@
 // The function to counting through (called in main)
 void code_to_measure() {
     int sum = 0;
-    for (int i = 0; i < 1000000000; ++i) {
+    for (int i = 0; i < 2000000000; ++i) {
         sum += 1;
     }
 }
@@ -28,6 +28,7 @@ static long perf_event_open(struct perf_event_attr *hw_event,
         fprintf(stderr, "Error creating event");
         exit(EXIT_FAILURE);
     }
+    printf("Success creating event\n");
     return fd;
 }
 
@@ -35,13 +36,21 @@ static long perf_event_open(struct perf_event_attr *hw_event,
 // see man perf_open_event)
 void configure_event(struct perf_event_attr *pe, 
                      uint32_t type,
-                     uint64_t config) {
+                     uint64_t config,
+                     int is_group_leader
+                     ) {
     memset(pe, 0, sizeof(struct perf_event_attr));
     pe->type = type;
     pe->size = sizeof(struct perf_event_attr);
     pe->config = config;
-    pe->read_format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
-    pe->disabled = 1;
+    if (is_group_leader)
+      pe->read_format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
+    // PERF_FORMAT_GROUP​  Allows all counter values in an event group to be read with one read.
+    // ​PERF_FORMAT_ID​  Adds a 64-bit unique value that corresponds to the event group.
+    pe->disabled = is_group_leader;
+    // 	When creating an event group, typically the group leader is initialized with disabled set to 1 and 
+    // any child events are initialized with disabled set to 0. Despite disabled being 0, 
+    // the child events will not start until the group leader is enabled.
     pe->exclude_kernel = 1;
     pe->exclude_hv = 1;
 }
@@ -60,46 +69,54 @@ struct read_format {
 };
 
 int main() {
-    int fd[TOTAL_EVENTS]; // fd[0] will be the group leader file descriptor
-    int id[TOTAL_EVENTS]; // event ids for file descriptors
+    long fd[TOTAL_EVENTS]; // fd[0] will be the group leader file descriptor
+    uint64_t id[TOTAL_EVENTS]; // event ids for file descriptors
     uint64_t pe_val[TOTAL_EVENTS]; // Counter value array corresponding to fd/id array.
+    
     struct perf_event_attr pe[TOTAL_EVENTS]; // Configuration structure for perf
                                              // events (see man perf_event_open)
     struct read_format counter_results;
 
     // Configure the group of PMUs to count
-    configure_event(&pe[0], PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES);
-    configure_event(&pe[1], PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS);
-    configure_event(&pe[2], PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_FRONTEND);
-    configure_event(&pe[3], PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_BACKEND);
-    configure_event(&pe[4], PERF_TYPE_RAW, 0x70); // Count of speculative loads (see Arm PMU docs)
-    configure_event(&pe[5], PERF_TYPE_RAW, 0x71); // Count of speculative stores (see Arm PMU docs)
+    configure_event(&pe[0], PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, 1);
+    configure_event(&pe[1], PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, 0);
+    configure_event(&pe[2], PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_FRONTEND, 0);
+    configure_event(&pe[3], PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_BACKEND, 0);
+    configure_event(&pe[4], PERF_TYPE_RAW, 0x70, 0); // Count of speculative loads (see Arm PMU docs)
+    configure_event(&pe[5], PERF_TYPE_RAW, 0x71, 0); // Count of speculative stores (see Arm PMU docs)
 
   // Create event group leader
   fd[0] = perf_event_open(&pe[0], 0, -1, -1, 0);
-  ioctl(fd[0], PERF_EVENT_IOC_ID, &id[0]);
+  ioctl(fd[0], PERF_EVENT_IOC_ID, &id[0]);    // 获取已创建的性能事件 perf_event 对象的唯一标识符
   // Let's create the rest of the events while using fd[0] as the group leader
   for (int i = 1; i < TOTAL_EVENTS; i++) {
     fd[i] = perf_event_open(&pe[i], 0, -1, fd[0], 0);
     ioctl(fd[i], PERF_EVENT_IOC_ID, &id[i]);
   }
+  printf("Success obtain perf_event ids.\n");
 
   // Reset counters and start counting; Since fd[0] is leader, this resets and
   // enables all counters PERF_IOC_FLAG_GROUP required for the ioctl to act on
   // the group of file descriptors
   ioctl(fd[0], PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+  printf("counter reset.\n");
   ioctl(fd[0], PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+
+  printf("measured function start.\n");
 
   // Example code to count through
   code_to_measure();
 
+  printf("measured function end.\n");
+
   // Stop all counters
   ioctl(fd[0], PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
+  printf("counter disabled.\n");
 
   // Read the group of counters and print result
   read(fd[0], &counter_results, sizeof(struct read_format));
   printf("Num events captured: %" PRIu64 "\n", counter_results.nr);
-  for (int i = 0; i < counter_results.nr; i++) {
+  for (uint64_t i = 0; i < counter_results.nr; i++) {
     for (int j = 0; j < TOTAL_EVENTS; j++) {
       if (counter_results.values[i].id == id[j]) {
         pe_val[i] = counter_results.values[i].value;
